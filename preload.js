@@ -28,6 +28,8 @@ if (process.contextIsolated) {
       closeApp: () => ipcRenderer.invoke('window:close'),
       minimizeApp: () => ipcRenderer.invoke('window:minimize'),
       maximizeApp: () => ipcRenderer.invoke('window:maximize'),
+      enableInteraction: () => ipcRenderer.invoke('window:enableInteraction'),
+      disableInteraction: () => ipcRenderer.invoke('window:disableInteraction'),
     });
 
   }
@@ -47,5 +49,7 @@ else{
     closeApp: () => ipcRenderer.invoke('window:close'),
     minimizeApp: () => ipcRenderer.invoke('window:minimize'),
     maximizeApp: () => ipcRenderer.invoke('window:maximize'),
+    enableInteraction: () => ipcRenderer.invoke('window:enableInteraction'),
+    disableInteraction: () => ipcRenderer.invoke('window:disableInteraction'),
   }
 }

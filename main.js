@@ -150,6 +150,25 @@ ipcMain.handle('window:maximize', () => {
   }
 });
 
+// Click-through control handlers
+ipcMain.handle('window:setClickThrough', (event, clickThrough) => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(clickThrough, { forward: true });
+  }
+});
+
+ipcMain.handle('window:enableInteraction', () => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(false);
+  }
+});
+
+ipcMain.handle('window:disableInteraction', () => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
+  }
+});
+
 
 // IPC Handle Section END !!! ---------------------------------------------------------------------------------------------------
 
@@ -809,11 +828,15 @@ app.whenReady().then(async () => {
       sandbox: false,
       contextIsolation: true,
       devTools: true,
-    }
+    },
   })
+
+  // mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    // Start with click-through enabled by default
+    mainWindow.setIgnoreMouseEvents(true, { forward: true });
   })
 
 
