@@ -1,0 +1,35 @@
+# Donna AI - Current Color Palette (Apple-inspired Dark Theme)
+
+## Background Colors
+- Primary Background: #000000 (Pure Black - Main app background)
+- Secondary Background: #111111 (Dark Gray - Cards, containers)
+- Surface Background: #1C1C1E (Medium Gray - Borders, dividers)
+- Tertiary Background: #2D2D2F (Light Gray - Hover states, subtle elements)
+
+## Text Colors
+- Primary Text: #FFFFFF (Pure White - Main headings, important text)
+- Secondary Text: #E5E5E7 (Light Gray - Body text, descriptions)
+- Muted Text: #8E8E93 (Medium Gray - Labels, secondary information)
+
+## Brand Colors
+- Primary Blue: #007AFF (Apple Blue - Primary actions, highlights, "Donna" text)
+- Success Green: #00D09C (Donna Green - Success states, active indicators)
+- Warning Orange: #FF9500 (Apple Orange - Warnings, halted states)
+- Error Red: #FF3B30 (Apple Red - Errors, close buttons, stopped states)
+
+## Interactive Elements
+- Hover Background: rgba(28, 28, 30, 0.6) (Semi-transparent - Button hover states)
+- Active Background: #007AFF (Blue - Active states, selected items)
+- Border Colors: #1C1C1E (Medium Gray - Default borders)
+- Focus Border: #007AFF (Blue - Focus states, active borders)
+
+## Status Colors
+- Active Status: #00D09C (Green - Running tasks, success)
+- Halted Status: #FF9500 (Orange - Paused/waiting states)
+- Stopped Status: #FF3B30 (Red - Stopped/error states)
+- Unknown Status: #8E8E93 (Gray - Unknown/default states)
+
+## Special Elements
+- Titlebar Background: #000000 (Pure Black - Custom titlebar)
+- Sidebar Background: #000000 (Pure Black - Navigation sidebar)
+- Modal Background: rgba(0, 0, 0, 0.8) (Semi-transparent - Modal overlays)
