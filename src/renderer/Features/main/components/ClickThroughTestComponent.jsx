@@ -17,27 +17,29 @@ const ClickThroughTestComponent = () => {
 				<TestTargetComponent />
 			</HoverComponent>
 
-			{/* Toggle button */}
-			<div style={{ position: 'absolute', top: '20px', left: '20px', zIndex: 10 }}>
-				<button
-					onClick={toggleOverlay}
-					style={{
-						padding: '10px 20px',
-						backgroundColor: isOverlayVisible ? '#e74c3c' : '#27ae60',
-						color: 'white',
-						border: 'none',
-						borderRadius: '5px',
-						cursor: 'pointer',
-						fontWeight: 'bold',
-						fontSize: '14px'
-					}}
-				>
-					{isOverlayVisible ? '🔒 Hide Overlay' : '👁️ Show Overlay'}
-				</button>
-				<div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
-					Status: {isOverlayVisible ? 'Overlay is blocking clicks' : 'Overlay is hidden - clicks should pass through'}
+			{/* Toggle button wrapped with HoverComponent */}
+			<HoverComponent>
+				<div style={{ position: 'absolute', top: '20px', left: '20px', zIndex: 10 }}>
+					<button
+						onClick={toggleOverlay}
+						style={{
+							padding: '10px 20px',
+							backgroundColor: isOverlayVisible ? '#e74c3c' : '#27ae60',
+							color: 'white',
+							border: 'none',
+							borderRadius: '5px',
+							cursor: 'pointer',
+							fontWeight: 'bold',
+							fontSize: '14px'
+						}}
+					>
+						{isOverlayVisible ? '🔒 Hide Overlay' : '👁️ Show Overlay'}
+					</button>
+					<div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+						Status: {isOverlayVisible ? 'Overlay is blocking clicks' : 'Overlay is hidden - clicks should pass through'}
+					</div>
 				</div>
-			</div>
+			</HoverComponent>
 
 			{/* HoverComponent overlay that can be hidden/shown */}
 			{isOverlayVisible && (
