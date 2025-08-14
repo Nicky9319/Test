@@ -1,10 +1,11 @@
 import React from 'react'
 import HoverComponent from '../../common/components/HoverComponent'
+import ClickThroughTestComponent from './ClickThroughTestComponent'
 
 const MainPage = () => {
   return (
     <div className="main-page">
-      {/* <HoverComponent> */}
+      <HoverComponent>
         <h1>Main Page</h1>
         <p>Welcome to the main page!</p>
         
@@ -25,7 +26,10 @@ const MainPage = () => {
             Main Screen Button
           </button>
         </div>
-      {/* </HoverComponent> */}
+      </HoverComponent>
+
+      {/* Click-through test component */}
+      <ClickThroughTestComponent />
     </div>
   );
 };

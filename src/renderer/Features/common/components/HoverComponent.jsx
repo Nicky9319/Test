@@ -1,10 +1,13 @@
 import React, { useRef, useEffect } from 'react'
 
+// Global state to coordinate multiple HoverComponent instances
+let globalHoverCount = 0
+let globalDisableTimeout = null
+
 // Makes wrapped region clickable even when the window is globally click-through
 // by enabling interaction on hover and disabling it when the pointer leaves.
 const HoverComponent = ({ children, className, style }) => {
 	const hoverDepthRef = useRef(0)
-	const disableTimeoutRef = useRef(null)
 
 	const enableInteraction = () => {
 		try {
@@ -20,34 +23,63 @@ const HoverComponent = ({ children, className, style }) => {
 
 	useEffect(() => {
 		return () => {
-			if (disableTimeoutRef.current) {
-				clearTimeout(disableTimeoutRef.current)
-				disableTimeoutRef.current = null
+			// Cleanup: reduce global count by this instance's hover depth
+			if (hoverDepthRef.current > 0) {
+				globalHoverCount = Math.max(globalHoverCount - hoverDepthRef.current, 0)
+				hoverDepthRef.current = 0
+				
+				// If no instances are hovered, disable interaction
+				if (globalHoverCount === 0) {
+					if (globalDisableTimeout) {
+						clearTimeout(globalDisableTimeout)
+						globalDisableTimeout = null
+					}
+					disableInteraction()
+				}
 			}
-			// Ensure we don't leave the window in interactive state by accident
-			disableInteraction()
 		}
 	}, [])
 
 	const handlePointerEnter = () => {
-		if (disableTimeoutRef.current) {
-			clearTimeout(disableTimeoutRef.current)
-			disableTimeoutRef.current = null
+		// Clear any pending disable timeout
+		if (globalDisableTimeout) {
+			clearTimeout(globalDisableTimeout)
+			globalDisableTimeout = null
 		}
+
+		// Increment this instance's hover depth
 		hoverDepthRef.current += 1
+
+		// If this is the first hover for this instance, increment global count
 		if (hoverDepthRef.current === 1) {
-			enableInteraction()
+			globalHoverCount += 1
+			console.log(`HoverComponent entered. Global hover count: ${globalHoverCount}`)
+			
+			// Enable interaction if this is the first hovered instance globally
+			if (globalHoverCount === 1) {
+				enableInteraction()
+			}
 		}
 	}
 
 	const handlePointerLeave = () => {
+		// Decrement this instance's hover depth
 		hoverDepthRef.current = Math.max(hoverDepthRef.current - 1, 0)
+
+		// If this instance is no longer hovered, decrement global count
 		if (hoverDepthRef.current === 0) {
-			// Small delay prevents flicker when moving between nested children
-			disableTimeoutRef.current = setTimeout(() => {
-				disableInteraction()
-				disableTimeoutRef.current = null
-			}, 75)
+			globalHoverCount = Math.max(globalHoverCount - 1, 0)
+			console.log(`HoverComponent left. Global hover count: ${globalHoverCount}`)
+			
+			// If no instances are hovered globally, disable interaction after delay
+			if (globalHoverCount === 0) {
+				// Small delay prevents flicker when moving between components
+				globalDisableTimeout = setTimeout(() => {
+					disableInteraction()
+					globalDisableTimeout = null
+					console.log('Interaction disabled - no HoverComponents hovered')
+				}, 75)
+			}
 		}
 	}
 
