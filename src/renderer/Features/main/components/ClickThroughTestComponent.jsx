@@ -4,18 +4,30 @@ import TestTargetComponent from './TestTargetComponent'
 
 const ClickThroughTestComponent = () => {
 	const [isOverlayVisible, setIsOverlayVisible] = useState(true)
+	const [isTargetClickable, setIsTargetClickable] = useState(true)
 
 	const toggleOverlay = () => {
 		setIsOverlayVisible(!isOverlayVisible)
+		// When hiding overlay, also make target click-through
+		if (isOverlayVisible) {
+			setIsTargetClickable(false)
+		} else {
+			setIsTargetClickable(true)
+		}
 		console.log(`Overlay is now ${!isOverlayVisible ? 'visible' : 'hidden'}`)
+		console.log(`Target is now ${!isOverlayVisible ? 'click-through' : 'clickable'}`)
 	}
 
 	return (
 		<div style={{ position: 'relative', width: '100%', height: '100vh' }}>
-			{/* Test target component wrapped with HoverComponent */}
-			<HoverComponent>
+			{/* Test target component - conditionally wrapped with HoverComponent */}
+			{isTargetClickable ? (
+				<HoverComponent>
+					<TestTargetComponent />
+				</HoverComponent>
+			) : (
 				<TestTargetComponent />
-			</HoverComponent>
+			)}
 
 			{/* Toggle button wrapped with HoverComponent */}
 			<HoverComponent>
@@ -37,6 +49,8 @@ const ClickThroughTestComponent = () => {
 					</button>
 					<div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
 						Status: {isOverlayVisible ? 'Overlay is blocking clicks' : 'Overlay is hidden - clicks should pass through'}
+						<br />
+						Target: {isTargetClickable ? 'Clickable' : 'Click-through'}
 					</div>
 				</div>
 			</HoverComponent>
