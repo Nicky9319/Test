@@ -1,79 +1,694 @@
 // Imports and modules !!! ---------------------------------------------------------------------------------------------------
 
-import { app, shell, BrowserWindow, ipcMain, globalShortcut, contextBridge } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, globalShortcut, contextBridge, screen, desktopCapturer, systemPreferences, protocol, net, Menu } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from './resources/icon.png?asset'
 
 const {spawn, exec} = require('child_process');
 const fs = require('fs');
-
 const path = require('path');
-
 const {autoUpdater, AppUpdater} = require('electron-differential-updater');
 const log = require('electron-log');
-
 const {os} = require('os');
 const {url} = require('inspector');
-
 const Docker = require('dockerode');
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
-import { initDb,
-  getAgentsInfo,
-  addAgentInfo,
-  updateAgentEnvVariable} from './db/db.js';
-
+import { initDb, getAgentsInfo, addAgentInfo, updateAgentEnvVariable} from './db/db.js';
 import dotenv from 'dotenv';
 dotenv.config();
-
 import { execSync } from 'child_process';
 
-
 // Imports and modules END !!! ---------------------------------------------------------------------------------------------------
-
-
-
 
 // Variables and constants !!! ---------------------------------------------------------------------------------------------------
 
 let mainWindow, store;
 let ipAddress = process.env.SERVER_IP_ADDRESS || '';
+let undetectabilityEnabled = true; // Enable undetectability by default
+let currentDisplay = null;
+let overlayWindows = new Map();
+let isOverlayActive = false;
 
 log.transports.file.level = 'info';
 autoUpdater.logger = log;
-
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
+// Platform detection
+const isMac = process.platform === 'darwin';
+const isWindows = process.platform === 'win32';
+const isLinux = process.platform === 'linux';
+const isDev = process.env.NODE_ENV === 'development';
+
 // Variables and constants END !!! ---------------------------------------------------------------------------------------------------
 
+// Undetectable Window Class !!! ---------------------------------------------------------------------------------------------------
 
+class UndetectableWindow {
+  window;
+  undetectabilityEnabled;
+  currentDisplay;
 
+  constructor(options = {}) {
+    this.undetectabilityEnabled = options.undetectabilityEnabled || false;
+    this.currentDisplay = options.initialDisplay || screen.getPrimaryDisplay();
+    
+    // Create window with undetectability features
+    this.window = new BrowserWindow({
+      show: isWindows, // On Windows, show immediately for undetectability
+      type: "panel", // Special window type that's harder to detect
+      alwaysOnTop: true,
+      transparent: true,
+      frame: false,
+      roundedCorners: false,
+      hasShadow: false,
+      fullscreenable: true, // Allow fullscreen
+      minimizable: false,
+      hiddenInMissionControl: true, // macOS: hide from Mission Control
+      skipTaskbar: this.undetectabilityEnabled, // Windows: hide from taskbar
+      webPreferences: {
+        preload: join(__dirname, '../preload/preload.js'),
+        sandbox: false,
+        contextIsolation: true,
+        devTools: isDev,
+      },
+      ...options
+    });
 
+    // Set content protection if undetectability is enabled
+    if (this.undetectabilityEnabled) {
+      this.window.setContentProtection(true);
+    }
 
-// IPC On Section !!! ------------------------------------------------------------------------------------------------------
+    // Additional undetectability measures
+    this.window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    this.window.setResizable(false);
 
-ipcMain.on('change-window', (event, arg) => {
-  console.log("Changing The Application Window !!!!")
-  window_name = "html/" + arg;
-  // window_name = arg;
-  mainWindow.loadFile(window_name);
-})
+    // Platform-specific settings
+    if (isWindows) {
+      this.window.setAlwaysOnTop(true, "screen-saver", 1);
+      this.window.webContents.setBackgroundThrottling(false);
+    }
 
-// IPC On Section END !!! ---------------------------------------------------------------------------------------------------
+    // Move to target display and make fullscreen
+    this.moveToDisplay(this.currentDisplay);
+    this.window.setFullScreen(true);
 
+    // Set initial mouse event ignoring - start with interaction enabled
+    this.setIgnoreMouseEvents(false);
 
+    // Event handlers
+    this.setupEventHandlers();
+  }
 
+  setupEventHandlers() {
+    this.window.once('ready-to-show', () => {
+      this.window.show();
+      this.window.setTitle('AgentBed');
+    });
 
+    this.window.on('page-title-updated', (event) => {
+      if (this.window.getTitle() !== 'AgentBed') {
+        this.window.setTitle('AgentBed');
+      }
+    });
 
-// IPC Handle Section !!! ------------------------------------------------------------------------------------------------------
+    this.window.webContents.on('will-navigate', (event) => {
+      event.preventDefault();
+    });
 
+    this.window.webContents.setWindowOpenHandler((details) => {
+      try {
+        const url = new URL(details.url);
+        if (url.protocol === 'https:' || (isDev && url.protocol === 'http:') || url.protocol === 'mailto:') {
+          shell.openExternal(details.url);
+          this.sendToWebContents('opened-external-link', { url: details.url });
+        }
+      } catch (error) {
+        log.error(`Error trying to open url ${details.url}`, error);
+      }
+      return { action: 'deny' };
+    });
+  }
 
-ipcMain.handle('get-ip-address', async (event) => {
+  setIgnoreMouseEvents(ignore) {
+    console.log(`[UndetectableWindow] Setting ignore mouse events: ${ignore}`);
+    
+    // When ignore is true, we want click-through (forward events to underlying apps)
+    // When ignore is false, we want interaction with our window
+    this.window.setIgnoreMouseEvents(ignore, { 
+      forward: true,
+      ignore: ignore 
+    });
+    
+    // Additional settings for better click-through behavior
+    if (ignore) {
+      // When click-through is enabled, ensure window doesn't steal focus
+      this.window.setFocusable(false);
+      this.window.setFocusable(true);
+    }
+  }
+
+  setContentProtection(enabled) {
+    this.window.setContentProtection(enabled);
+  }
+
+  restoreContentProtection() {
+    this.window.setContentProtection(this.undetectabilityEnabled);
+  }
+
+  moveToDisplay(display, options = {}) {
+    this.currentDisplay = display;
+    this.window.setPosition(display.workArea.x, display.workArea.y);
+    this.window.setSize(display.workArea.width, display.workArea.height);
+    
+    // Ensure window is fullscreen when moving to a new display
+    if (!options?.preserveFullscreen) {
+      this.window.setFullScreen(true);
+    }
+    
+    this.sendToWebContents('display-changed', {
+      preservePosition: options?.preservePosition,
+      cursorScreenX: options?.cursorScreenX,
+      cursorScreenY: options?.cursorScreenY
+    });
+  }
+
+  sendToWebContents(channel, data) {
+    if (!this.window.isDestroyed()) {
+      this.window.webContents.send(channel, data);
+    }
+  }
+
+  focus() {
+    this.window.focus();
+  }
+
+  blur() {
+    if (isWindows) {
+      this.window.setFocusable(false);
+      this.window.setFocusable(true);
+      this.window.setSkipTaskbar(true);
+    }
+    this.window.blur();
+  }
+
+  minimize() {
+    this.window.minimize();
+  }
+
+  close() {
+    if (!this.window.isDestroyed()) {
+      this.window.close();
+    }
+  }
+
+  isDestroyed() {
+    return this.window.isDestroyed();
+  }
+
+  getBounds() {
+    return this.window.getBounds();
+  }
+
+  reload() {
+    this.window.webContents.reload();
+  }
+
+  toggleDevTools() {
+    if (this.window.webContents.isDevToolsOpened()) {
+      this.window.webContents.closeDevTools();
+    } else {
+      this.window.webContents.openDevTools({ mode: 'detach' });
+      app.focus();
+    }
+  }
+
+  toggleUndetectability() {
+    this.undetectabilityEnabled = !this.undetectabilityEnabled;
+    this.setContentProtection(this.undetectabilityEnabled);
+    this.window.setSkipTaskbar(this.undetectabilityEnabled);
+    
+    // Ensure window stays fullscreen when toggling undetectability
+    if (this.window.isFullScreen()) {
+      this.window.setFullScreen(true);
+    }
+    
+    return this.undetectabilityEnabled;
+  }
+
+  toggleFullscreen() {
+    if (this.window.isFullScreen()) {
+      this.window.setFullScreen(false);
+    } else {
+      this.window.setFullScreen(true);
+    }
+    return this.window.isFullScreen();
+  }
+
+  setFullscreen(fullscreen) {
+    this.window.setFullScreen(fullscreen);
+  }
+
+  isFullscreen() {
+    return this.window.isFullScreen();
+  }
+}
+
+// Display Overlay Class !!! ---------------------------------------------------------------------------------------------------
+
+class DisplayOverlay {
+  window;
+  displayId;
+  ipcChannel;
+
+  constructor(display, onClickCallback) {
+    console.log(`[DisplayOverlay] Creating overlay for display ${display.id}`);
+    this.displayId = display.id;
+    this.ipcChannel = `overlay-click-${this.displayId}`;
+
+    this.window = new BrowserWindow({
+      show: false,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      focusable: false, // CRITICAL: Never steal focus from underlying apps
+      x: display.bounds.x,
+      y: display.bounds.y,
+      width: display.bounds.width,
+      height: display.bounds.height,
+      webPreferences: {
+        preload: join(__dirname, '../preload/preload.js'),
+        sandbox: false,
+        contextIsolation: true,
+        devTools: false,
+      }
+    });
+
+    console.log(`[DisplayOverlay] Window created for display ${this.displayId}`);
+
+    // Make overlay visible on all workspaces
+    this.window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    
+    // CRITICAL: Set up focus management to prevent stealing focus
+    this.window.setFocusable(false);
+    this.window.setAlwaysOnTop(true, "screen-saver", 1);
+    
+    // Allow mouse events but never focus
+    this.window.setIgnoreMouseEvents(false);
+    
+    // Prevent focus stealing on click
+    this.window.on('focus', () => {
+      console.log(`[DisplayOverlay] Focus event triggered for display ${this.displayId} - preventing focus`);
+      this.window.blur();
+    });
+
+    // Setup IPC handler for overlay clicks
+    const clickHandler = () => {
+      console.log(`[DisplayOverlay] Overlay click triggered for display ${this.displayId}`);
+      onClickCallback(this.displayId);
+    };
+
+    ipcMain.on(this.ipcChannel, clickHandler);
+
+    this.window.on('closed', () => {
+      console.log(`[DisplayOverlay] Cleaning up IPC handler for display ${this.displayId}`);
+      ipcMain.removeListener(this.ipcChannel, clickHandler);
+    });
+
+    this.window.webContents.on('will-navigate', (event) => {
+      event.preventDefault();
+    });
+
+    this.window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+    // CRITICAL: Prevent any focus stealing during window creation
+    this.window.once('ready-to-show', () => {
+      this.window.setFocusable(false);
+      this.window.blur();
+    });
+
+    this.loadOverlayHTML(display);
+  }
+
+  loadOverlayHTML(display) {
+    console.log(`[DisplayOverlay] Loading HTML for display ${display.id}`);
+    
+    const displayData = {
+      display: {
+        id: display.id,
+        label: display.label || `Display ${display.id}`,
+        bounds: display.bounds
+      },
+      ipcChannel: this.ipcChannel
+    };
+
+    let overlayUrl;
+    if (isDev && process.env.ELECTRON_RENDERER_URL) {
+      overlayUrl = new URL(`${process.env.ELECTRON_RENDERER_URL}/overlay.html`);
+      console.log(`[DisplayOverlay] Using dev URL: ${overlayUrl.toString()}`);
+    } else {
+      // For production, load the overlay file directly
+      overlayUrl = `file://${join(__dirname, '../renderer/overlay.html')}`;
+      console.log(`[DisplayOverlay] Using file URL: ${overlayUrl}`);
+    }
+
+    const encodedData = encodeURIComponent(JSON.stringify(displayData));
+    console.log(`[DisplayOverlay] Display data encoded: ${encodedData.substring(0, 100)}...`);
+    
+    // Handle URL construction properly
+    if (overlayUrl instanceof URL) {
+      overlayUrl.searchParams.set('displayData', encodedData);
+      const finalUrl = overlayUrl.toString();
+      console.log(`[DisplayOverlay] Loading URL: ${finalUrl}`);
+      this.window.loadURL(finalUrl);
+    } else {
+      // For file URLs, append as query parameter
+      const separator = overlayUrl.includes('?') ? '&' : '?';
+      const finalUrl = `${overlayUrl}${separator}displayData=${encodedData}`;
+      console.log(`[DisplayOverlay] Loading file URL: ${finalUrl}`);
+      this.window.loadURL(finalUrl);
+    }
+  }
+
+  show() {
+    this.window.show();
+    // Ensure window doesn't get focus when shown
+    this.window.blur();
+    this.window.setFocusable(false);
+  }
+
+  hide() {
+    this.window.hide();
+  }
+
+  highlight() {
+    this.window.webContents.executeJavaScript(`
+      window.dispatchEvent(new CustomEvent('highlight'));
+    `).catch(() => {});
+  }
+
+  unhighlight() {
+    this.window.webContents.executeJavaScript(`
+      window.dispatchEvent(new CustomEvent('unhighlight'));
+    `).catch(() => {});
+  }
+
+  destroy() {
+    console.log(`[DisplayOverlay] Destroying overlay for display ${this.displayId}`);
+    if (!this.window.isDestroyed()) {
+      this.window.close();
+    }
+  }
+
+  getBounds() {
+    return this.window.getBounds();
+  }
+}
+
+// Display Overlay Manager !!! ---------------------------------------------------------------------------------------------------
+
+class DisplayOverlayManager {
+  overlays = new Map();
+  isActive = false;
+
+  showOverlays() {
+    console.log("[DisplayOverlayManager] Showing overlays");
+    this.hideOverlays();
+    this.isActive = true;
+
+    const displays = screen.getAllDisplays();
+    console.log("[DisplayOverlayManager] Available displays:", displays.length);
+    
+    const currentWindowBounds = mainWindow.getBounds();
+    const currentDisplay = screen.getDisplayMatching(currentWindowBounds);
+    console.log("[DisplayOverlayManager] Current display:", currentDisplay.id);
+
+    for (const display of displays) {
+      console.log(`[DisplayOverlayManager] Processing display ${display.id}: ${display.label}`);
+      if (display.id === currentDisplay.id) {
+        console.log(`[DisplayOverlayManager] Skipping current display ${display.id}`);
+        continue;
+      }
+
+      console.log(`[DisplayOverlayManager] Creating overlay for display ${display.id}`);
+      const overlay = new DisplayOverlay(display, (displayId) => {
+        console.log(`[DisplayOverlayManager] Display ${displayId} clicked, checking if active: ${this.isActive}`);
+        
+        if (!this.isActive) {
+          console.log(`[DisplayOverlayManager] Ignoring click for display ${displayId} - overlays are inactive`);
+          return;
+        }
+
+        console.log(`[DisplayOverlayManager] Moving window to display ${displayId}`);
+        const targetDisplay = screen.getAllDisplays().find(d => d.id === displayId);
+        if (targetDisplay) {
+          mainWindow.moveToDisplay(targetDisplay);
+          this.hideOverlays();
+        }
+      });
+
+      this.overlays.set(display.id, overlay);
+      overlay.show();
+      console.log(`[DisplayOverlayManager] Overlay created and shown for display ${display.id}`);
+    }
+  }
+
+  hideOverlays() {
+    console.log("[DisplayOverlayManager] Hiding overlays");
+    this.isActive = false;
+    
+    for (const overlay of this.overlays.values()) {
+      overlay.destroy();
+    }
+    this.overlays.clear();
+  }
+
+  highlightDisplay(displayId) {
+    const overlay = this.overlays.get(displayId);
+    if (overlay) {
+      overlay.highlight();
+    }
+  }
+
+  unhighlightDisplay(displayId) {
+    const overlay = this.overlays.get(displayId);
+    if (overlay) {
+      overlay.unhighlight();
+    }
+  }
+}
+
+// Utility Functions !!! ---------------------------------------------------------------------------------------------------
+
+function getAvailableDisplays() {
+  const currentBounds = mainWindow.getBounds();
+  const currentDisplay = screen.getDisplayMatching(currentBounds);
+  
+  return screen.getAllDisplays().map(display => ({
+    ...display,
+    label: display.label || `Display ${display.id}`,
+    primary: display.id === screen.getPrimaryDisplay().id,
+    current: display.id === currentDisplay.id
+  }));
+}
+
+function findDisplayById(displayId) {
+  return screen.getAllDisplays().find(display => display.id === displayId);
+}
+
+async function captureScreenshot() {
+  try {
+    mainWindow.setContentProtection(true);
+    
+    if (isMac) {
+      return await captureScreenshotMac();
+    } else {
+      return await captureScreenshotOther();
+    }
+  } finally {
+    mainWindow.restoreContentProtection();
+  }
+}
+
+async function captureScreenshotMac() {
+  const targetDisplay = mainWindow.currentDisplay;
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: {
+      width: targetDisplay.bounds.width,
+      height: targetDisplay.bounds.height
+    }
+  });
+
+  const source = sources.find(s => s.display_id === targetDisplay.id.toString()) || sources[0];
+  
+  if (!source) {
+    throw new Error('Unable to capture screenshot: no display source found');
+  }
+
+  return {
+    data: source.thumbnail.toPNG(),
+    contentType: 'image/png'
+  };
+}
+
+async function captureScreenshotOther() {
+  // For non-Mac platforms, you might want to use a different approach
+  // This is a placeholder - you'll need to implement based on your needs
+  throw new Error('Screenshot capture not implemented for this platform');
+}
+
+// IPC Handlers !!! ---------------------------------------------------------------------------------------------------
+
+// Window management handlers
+ipcMain.handle('window:close', () => {
+  if (mainWindow) {
+    mainWindow.close();
+  }
 });
 
+ipcMain.handle('window:minimize', () => {
+  if (mainWindow) {
+    mainWindow.minimize();
+  }
+});
 
+ipcMain.handle('window:maximize', () => {
+  if (mainWindow) {
+    if (mainWindow.window.isMaximized()) {
+      mainWindow.window.unmaximize();
+    } else {
+      mainWindow.window.maximize();
+    }
+  }
+});
+
+// Undetectability handlers
+ipcMain.handle('window:setClickThrough', (event, clickThrough) => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(clickThrough);
+  }
+});
+
+ipcMain.handle('window:enableInteraction', () => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(false);
+  }
+});
+
+ipcMain.handle('window:disableInteraction', () => {
+  if (mainWindow) {
+    mainWindow.setIgnoreMouseEvents(true);
+  }
+});
+
+ipcMain.handle('window:toggleUndetectability', () => {
+  undetectabilityEnabled = !undetectabilityEnabled;
+  if (mainWindow) {
+    mainWindow.undetectabilityEnabled = undetectabilityEnabled;
+    mainWindow.setContentProtection(undetectabilityEnabled);
+    mainWindow.window.setSkipTaskbar(undetectabilityEnabled);
+  }
+  return undetectabilityEnabled;
+});
+
+ipcMain.handle('window:toggleFullscreen', () => {
+  if (mainWindow) {
+    return mainWindow.toggleFullscreen();
+  }
+  return false;
+});
+
+ipcMain.handle('window:setFullscreen', (event, fullscreen) => {
+  if (mainWindow) {
+    mainWindow.setFullscreen(fullscreen);
+  }
+});
+
+ipcMain.handle('window:isFullscreen', () => {
+  if (mainWindow) {
+    return mainWindow.isFullscreen();
+  }
+  return false;
+});
+
+// Display management handlers
+ipcMain.handle('window:getAvailableDisplays', () => {
+  return getAvailableDisplays();
+});
+
+ipcMain.handle('window:moveToDisplay', (event, displayId, options = {}) => {
+  const display = findDisplayById(displayId);
+  if (display && mainWindow) {
+    mainWindow.moveToDisplay(display, options);
+  }
+});
+
+ipcMain.handle('window:showDisplayOverlays', () => {
+  if (overlayManager) {
+    overlayManager.showOverlays();
+  }
+});
+
+ipcMain.handle('window:hideDisplayOverlays', () => {
+  if (overlayManager) {
+    overlayManager.hideOverlays();
+  }
+});
+
+ipcMain.handle('window:highlightDisplay', (event, displayId) => {
+  if (overlayManager) {
+    overlayManager.highlightDisplay(displayId);
+  }
+});
+
+ipcMain.handle('window:unhighlightDisplay', (event, displayId) => {
+  if (overlayManager) {
+    overlayManager.unhighlightDisplay(displayId);
+  }
+});
+
+// Screenshot handler
+ipcMain.handle('window:captureScreenshot', async () => {
+  return await captureScreenshot();
+});
+
+// Media permission handlers
+ipcMain.handle('window:requestMediaPermission', async (event, permissionType) => {
+  if (isMac) {
+    if (permissionType === 'screen') {
+      try {
+        await desktopCapturer.getSources({ types: ['screen'] });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    
+    try {
+      const status = systemPreferences.getMediaAccessStatus(permissionType);
+      if (status === 'not-determined') {
+        return await systemPreferences.askForMediaAccess(permissionType);
+      }
+      return status === 'granted';
+    } catch (error) {
+      log.error('Media permission error:', error);
+      return false;
+    }
+  }
+  return true;
+});
+
+// Store handlers (keeping your existing ones)
 ipcMain.handle('store-data', (event, key, value) => {
   storeStoreData(key, value);
 });
@@ -90,185 +705,54 @@ ipcMain.handle('delete-data', (event, key) => {
   storeDeleteData(key);
 });
 
-
-ipcMain.handle('show-dialog', async (event, dialogType, dialogTitle, dialogMessage) => {
-  await dialog.showMessageBox({
-    type: dialogType,
-    title: dialogTitle,
-    message: dialogMessage
-  })
-
-  return;
-});
-
-
-
-ipcMain.handle('start-agent', (event, agentId) => {
-
-})
-
-ipcMain.handle('stop-agent', (event, agentId) =>{
-
-})
-
-
-
+// Database handlers (keeping your existing ones)
 ipcMain.handle('db:getAgentsInfo', async () => {
   return await getAgentsInfo();
 });
 
-// Add a new agent
 ipcMain.handle('db:addAgentInfo', async (event, agentInfo) => {
   return await addAgentInfo(agentInfo);
 });
 
-// New handler for updating environment variables
 ipcMain.handle('db:updateAgentEnv', async (event, agentId, varName, varValue) => {
   return await updateAgentEnvVariable(agentId, varName, varValue);
 });
 
-// Custom titlebar handlers
-ipcMain.handle('window:close', () => {
-  if (mainWindow) {
-    mainWindow.close();
-  }
+// Global shortcut handlers
+ipcMain.handle('window:registerGlobalShortcut', (event, accelerator) => {
+  return globalShortcut.register(accelerator, () => {
+    mainWindow.sendToWebContents('global-shortcut-triggered', { accelerator });
+  });
 });
 
-ipcMain.handle('window:minimize', () => {
-  if (mainWindow) {
-    mainWindow.minimize();
-  }
+ipcMain.handle('window:unregisterGlobalShortcut', (event, accelerator) => {
+  return globalShortcut.unregister(accelerator);
 });
 
-ipcMain.handle('window:maximize', () => {
-  if (mainWindow) {
-    if (mainWindow.isMaximized()) {
-      mainWindow.unmaximize();
-    } else {
-      mainWindow.maximize();
-    }
-  }
-});
+// Utility Functions (keeping your existing ones) !!! ---------------------------------------------------------------------------------------------------
 
-// Click-through control handlers
-ipcMain.handle('window:setClickThrough', (event, clickThrough) => {
-  if (mainWindow) {
-    mainWindow.setIgnoreMouseEvents(clickThrough, { forward: true });
-  }
-});
-
-ipcMain.handle('window:enableInteraction', () => {
-  if (mainWindow) {
-    mainWindow.setIgnoreMouseEvents(false);
-  }
-});
-
-ipcMain.handle('window:disableInteraction', () => {
-  if (mainWindow) {
-    mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  }
-});
-
-
-// IPC Handle Section END !!! ---------------------------------------------------------------------------------------------------
-
-
-
-
-
-
-
-// Auto Update Section !!! -------------------------------------------------------------------------------------
-
-autoUpdater.on('checking-for-update', () => {
-  console.log("Checking for Update")
-  log.info('Checking for update...');
-});
-
-autoUpdater.on('update-available', (info) => {
-  // autoUpdater.downloadUpdate();
-  log.info('Update available.');
-});
-
-autoUpdater.on('update-not-available', (info) => {
-  log.info('Update not available.');
-});
-
-autoUpdater.on('error', (err) => {
-  log.error('Error in auto-updater. ' + err);
-});
-
-autoUpdater.on('download-progress', (progressObj) => {
-  let log_message = 'Download speed: ' + progressObj.bytesPerSecond;
-  log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
-  log_message = log_message + ' (' + progressObj.transferred + '/' + progressObj.total + ')';
-  log.info(log_message);
-});
-
-autoUpdater.on('update-downloaded', (info) => {
-  log.info('Update downloaded');
-});
-
-// Auto Updater Section END !!! ----------------------------------------------------------------------------------
-
-
-
-
-
-
-// Electron - Store Utility Section !!! -------------------------------------------------------------------------------------
-
-function storeStoreData(key, value) {
-  store.set(key, value);
-}
-
-function storeHas(key) {
-  return store.has(key);
-}
-
-function storeGetData(key) {
-  return store.get(key);
-}
-
-function storeDeleteData(key) {
-  store.delete(key);
-}
-
-// Electron Store Utility Section END !!! ----------------------------------------------------------------------------------
-
-
-
-
-
-
-// Utility Functions Section !!! -------------------------------------------------------------------------------------
-
-async function spawnPowerShellCommand(command , needOutput = false){
+async function spawnPowerShellCommand(command, needOutput = false) {
   return new Promise((resolve, reject) => {
-      const process = spawn('powershell.exe', [command]);
+    const process = spawn('powershell.exe', [command]);
 
-      let stdout = '';
-      process.stdout.on('data', (data) => {
-          stdout += data.toString();
-      });
+    let stdout = '';
+    process.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
 
-      let stderr = '';
-      process.stderr.on('data', (data) => {
-          stderr += data.toString();
-      });
+    let stderr = '';
+    process.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
 
-      process.on('close', (code) => {
-        if(code === 0){
-          if (needOutput) resolve(stdout);
-          else resolve();
-        }
-        else{
-          resolve()
-        }
-        // else{
-        //   reject(new Error(`Command failed with code ${code}: ${stderr}`));
-        // }
-      });
+    process.on('close', (code) => {
+      if (code === 0) {
+        if (needOutput) resolve(stdout);
+        else resolve();
+      } else {
+        resolve();
+      }
+    });
   });
 }
 
@@ -295,576 +779,139 @@ async function loadStore() {
   return store;
 }
 
-async function waitForDockerPing() {
-  return new Promise(async (resolve, reject) => {
-    // const pingInterval = setInterval(async () => {
-    //   try {
-    //     await docker.ping();
-    //     console.log("Engine is Running !!!");
-    //     resolve();
-    //     clearInterval(pingInterval);
-    //   } catch (error) {
-    //     console.log("Docker Engine Not Ready Yet");
-    //   }
-    // }, 5000);
-
-
-  });
+function storeStoreData(key, value) {
+  store.set(key, value);
 }
 
-// Utility Functions Section END !!! --------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Config WSL Section !!! ------------------------------------------------------------------------------------------------------------------------------
-
-
-
-
-/** Returns the Current State Of Wsl Helping to Decide What Step of Configuration is Wsl Currently present at */
-/** 3 States [RestartSystem, InstallDistro,  ConfigureDistro, Good] */
-function GetWslState(){
-  return new Promise(async (resolve, reject) => {
-    needsSystemRestart = await CheckWslNeedsRestart();
-    if(needsSystemRestart){
-        resolve("RestartSystem");
-        return;
-    }
-
-    distroInstalled = await checkDistroPresent('Ubuntu');
-    if(!distroInstalled){
-        resolve("InstallDistro");
-        return;
-    }
-
-    wslConfigCompleted = await checkWslConfigDone('Ubuntu');
-    if(!wslConfigCompleted){
-        resolve("ConfigureDistro");
-        return;
-    }
-
-    resolve("Good");
-    return;
-  });
+function storeHas(key) {
+  return store.has(key);
 }
 
-/** Gets The Current Wsl Status */
-function GetWslSTATUS(){
-  return new Promise((resolve, reject) => {
-      spawnPowerShellCommand('wsl.exe --status' , true).then((output) => {
-          resolve(output);
-      });
-  });
+function storeGetData(key) {
+  return store.get(key);
 }
 
-/** Checks If Wsl needs Restart Because of the current Wsl Status */
-function CheckWslNeedsRestart(){
-  return new Promise((resolve, reject) => {
-      GetWslSTATUS().then(async (status) => {
-          statusOutput = status.toString().replace(/\x00/g, '').trim();
-
-          EnableVMPComponentStatement = `Please enable the "Virtual Machine Platform" optional component and ensure virtualization is enabled in the BIOS.`;
-          CommandToEnableComponentStatement = `Enable "Virtual Machine Platform" by running: wsl.exe --install --no-distribution For information please visit https://aka.ms/enablevirtualization`
-
-          if(statusOutput.includes(EnableVMPComponentStatement) || statusOutput.includes(CommandToEnableComponentStatement)){
-              resolve(true);
-              return;
-          }
-
-          resolve(false);
-          return;
-      });
-  });
+function storeDeleteData(key) {
+  store.delete(key);
 }
 
-/** Checks if a specific Distro is present Inside Wsl or not */
-function checkDistroPresent(distroName){
-
-  return new Promise((resolve, reject) => {
-      exec('wsl --list --quiet', (error, stdout, stderr) => {
-
-          if (error) {
-              console.error(`Error checking for distros: ${error.message}`);
-              resolve(false);
-              return;
-          }
-
-          if (stderr) {
-              console.error(`Standard error: ${stderr}`);
-              resolve(false);
-              return;
-          }
-
-          if (stdout) {
-              output = stdout.toString().replace(/\x00/g, '').trim();
-              if(output.split('\n').map(line => line.replace(/\r$/, '')).includes(distroName)) {
-                  console.log("Distro Found");
-                  resolve(true);
-                  return;
-              }
-              else{
-                  resolve(false);
-                  return;
-              }         
-          } 
-
-          if (stdout == '') {
-              resolve(false);
-              return;
-          }
-      });
-
-  })
-}
-
-// !!!! Need to be Updated
-/** Check if All the Configurations Needed to Run Containers Inside a Distro Is Completed or Not, Return -> Boolean */
-function checkWslConfigDone(distroName){
-  return new Promise((resolve, reject) => {
-      checkNvidiaContainerConfigDone(distroName).then((result) => {
-          if (!result) {
-              resolve(false);
-              return;
-          }
-
-          checkPodmanConfigDone(distroName).then((result) => {
-              resolve(result);
-              return;
-          })
-      })
-
-
-
-
-  })
-}
-
-/** Handled the Actions to take based on the Wsl State */
-function handleWslStateActions(state){
-  console.log("Current Wsl State : " , state);
-  if(state == "RestartSystem"){
-      console.log("Need to Restart System");
-      ConfigSetupWslBeforeRestart().then(() => {
-          console.log("Pre-requisites Done");
-          mainWindow.webContents.send('navigate-to-component' , '/LoginPage/RestartWidget');
-      });
-  }
-  else if(state == "ConfigureDistro" || state == "InstallDistro"){
-      console.log("Need to Install or Configure Distro");
-      mainWindow.webContents.send('navigate-to-component' , '/LoginPage/ConfigLoadingWidget');
-  }
-  else{
-    storeStoreData('isWslSetupDone' , true);
-    mainWindow.webContents.send('navigate-to-component' , '/MainPage');
-  }
-}
-
-/** Completes the Configuration for Wsl Before Restart */
-function ConfigSetupWslBeforeRestart(){
-  return new Promise(async (resolve, reject) => {
-      console.log("Starting Pre-requisites")
-
-      VMPComponentActivateCommand = "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart"
-      try {await spawnPowerShellCommand(VMPComponentActivateCommand);} catch(error) {}
-      console.log("VMP Activated")
-
-      WslInstallCommand = `wsl.exe --install --no-distribution`;
-      await spawnPowerShellCommand(WslInstallCommand);
-      console.log("Wsl No Distro Installed")
-
-      KernelUpdateCommand = `wsl.exe --update`;
-      await spawnPowerShellCommand(KernelUpdateCommand);
-      resolve();
-  });
-}
-
-/** Configures the Complete Wsl Distro to run Containers By a specific User*/
-async function ConfigWslFromScratch(username, password , distroName){
-  console.log("configuring Wsl from Scratch")
-  try {await MakeWslSetupDirectory(username , distroName);} catch(error){}
-  console.log("Directory Work Done")
-  await CopyShScriptToWsl(username , distroName);
-  await ExecuteWslConfigShScript(username , password , distroName);
-}
-
-/** Installing the Complete Wsl Distro from Scratch and Configuring the Envrionment for that Distro */
-function InstallWslDistroandConfigUser(username , password , distroName){
-  return new Promise((resolve, reject) => {
-    // console.log("Starting Wsl Installation and Config")
-    const controller = new AbortController();
-    const signal = controller.signal;
-
-    InstallDistroWSL(signal , distroName);
-
-    EventDistroInstalled = new Promise(async (resolve, reject) => {
-        while(true){
-            // console.log("Checking for Distro Installation");
-            const isPresent = await checkDistroPresent(distroName);
-            console.log(isPresent);
-
-            if(isPresent){
-                console.log("Distro Found");
-                controller.abort();
-                resolve();
-                break;
-            }
-            
-            await new Promise((resolve , reject) => {
-                setTimeout(() => {
-                    resolve();
-                }, 5000);
-            });
-
-        }
-    });
-
-    EventDistroInstalled
-    .then(() =>{
-        console.log("Distro Installed Can Move forward to User Adding");
-        AddNewUserInDistro(username , password , distroName , true)
-        .then(async () => {
-            console.log("User Added");
-
-            await ConfigWslFromScratch(username , password , distroName);
-
-            resolve();
-        });
-    });
-
-
-  });
-
-}
-
-
-// !!!! Need to be Updated
-/** Install a Distro In Wsl */  // 
-function InstallDistroWSL(signal , distroName){
-  return new Promise((resolve, reject) => {
-      console.log(`Installing the Desired Distro: ${distroName}`);
-      const InstallDistroProcess = spawn('wsl', ['--install', '-d', distroName]);
-
-      InstallDistroProcess.on('close', () => {
-          console.log(`Process of Installing the Desired Distro has Completed`);
-          resolve();
-          return;
-      });
-
-
-      signal.addEventListener('abort', () => {
-          console.log("Abort Signal Received");
-          InstallDistroProcess.kill('SIGKILL');
-          resolve();
-          return;
-      });
-
-  });
-}
-
-/** Setting Up a new User Inside a Distro alongiside with its password */
-function AddNewUserInDistro(username , password , distroName , sudoAccess){
-  return new Promise(async (resolve, reject) => {
-      await AddUserToDistro(username , distroName , sudoAccess);
-      await ChangeUserPasswordInDistro(username , password , distroName);
-      resolve();
-  });
-}
-
-/** Adds a User To Distro Without Setting Password */
-function AddUserToDistro(username , distroName , sudoAccess){
-  return new Promise((resolve, reject) => {
-
-      let AddUserCommand = `wsl -d ${distroName} --exec bash -c "useradd -m -s /bin/bash ${username}"`;
-      if(sudoAccess)
-          AddUserCommand = `wsl -d ${distroName} --exec bash -c "useradd -m -s /bin/bash -G sudo ${username}"`;
-
-
-      console.log(AddUserCommand)
-      const AddUserProcess = spawn('powershell.exe', [AddUserCommand]);
-
-      AddUserProcess.stderr.on('data', (data) => {
-          console.error(`stderr: ${data}`);
-      });
-
-      AddUserProcess.on('close', () => {
-          resolve();
-      });
-
-      AddUserProcess.stdout.on('data', (data) => {
-          console.log(`stdout: ${data}`);
-      });
-
-  });
-}
-
-/** Changes the password for a specific User in a specific Distro */
-function ChangeUserPasswordInDistro(username , password , distroName){
-  return new Promise((resolve, reject) => {
-      const ChangePasswordCommand = `echo ${username}:${password} | chpasswd`;
-      console.log(ChangePasswordCommand)
-
-      const ChangePasswordProcess = spawn('wsl', ['-d', distroName, '--exec', 'bash', '-c', ChangePasswordCommand]);
-
-      ChangePasswordProcess.stderr.on('data', (data) => {
-          console.error(`stderr: ${data}`);
-      });
-
-      ChangePasswordProcess.on('close', () => {
-          console.log("Password Changed");
-          resolve();
-      });
-  });
-}
-
-// !!!! Need to be Updated
-/** Set-ups Directory For a Particular User Inside particular Distro Used To Store Sh Scripts Needed to Setup Environment */
-function MakeWslSetupDirectory(username ,  distroName){
-  return new Promise((resolve, reject) => {
-    commandToExecute = "mkdir ~/wslSetupScript"
-    logger.info('Main Js: Making Directory for Storing Wsl Setup Script')
-    executeWslCommand(commandToExecute , distroName , username).then(() => {
-        logger.info('Main Js: Directory Made for Storing Wsl Setup Script')
-        resolve();
-    });
-  })
-}
-
-// !!!! Need to be Updated
-/** Copying Sh Script From Host machine OS to Wsl for a particular user inside a particular Distro*/
-function CopyShScriptToWsl(username , distroName){
-  return new Promise((resolve, reject) => {
-    commandToExecute = `cp ./wslPodmanSetup.sh ~/wslSetupScript`
-    logger.info('Main Js: Copying Sh Script to Wsl')
-    executeWslCommand(commandToExecute , distroName , username).then(() => {
-        logger.info('Main Js: Sh Script Copied to Wsl')
-        resolve();
-    });
-  })
-}
-
-// !!!! Need to be Updated
-/** Executing the Sh Files Inside a Distro for a particular User */
-function ExecuteWslConfigShScript(username , password , distroName){
-  return new Promise((resolve, reject) => {
-    console.log("Running the Script to Configure WSL Distro")
-    commandToExecute = `cd /home/${username}/wslSetupScript  && echo ${password} | sudo -S bash wslPodmanSetup.sh`
-    console.log(password);
-    // executeWslCommand(commandToExecute , distroName , username).then(() => {
-    //     console.log("Script Executed !!!")
-    //     resolve();
-    // });
-    logger.info('Main Js: Executing the Sh Script to Configure WSL Distro')
-    const ExecuteCMD = `wsl -d ${distroName} -u ${username} --exec bash -c "cd /home/${username}/wslSetupScript  && echo ${password} | sudo -S bash wslPodmanSetup.sh"`
-    spawnPowerShellCommand(ExecuteCMD).then(() => {
-        logger.info('Main Js: Script Executed and configuration Completed')
-        resolve();
-    });
-  })
-}
-
-
-/** Executes a Command Inside a particular WSL Distro with a particular user */
-function executeWslCommand(command , distroName , username = "root" , needOutput = false){
-  return new Promise((resolve, reject) => {
-      const ExecuteCMD = `wsl -d ${distroName} -u ${username} --exec bash -c "${command}"`
-      const process = spawn('powershell.exe', [ExecuteCMD]);
-
-      let stdout = '';
-      process.stdout.on('data', (data) => {
-          stdout += data.toString();
-      });
-
-      let stderr = '';
-      process.stderr.on('data', (data) => {
-        // console.log("Error : " , data.toString());
-          stderr += data.toString();
-      });
-
-      process.on('close', (code) => {
-        if(code === 0){
-          if (needOutput) resolve(stdout);
-          else resolve();
-        }
-        else{
-          console.log("Error Exist In this Command");
-          resolve("Error");
-          // reject(new Error(`Command failed with code ${code}: ${stderr}`));
-        }
-      });
-  });
-}
-
-
-
-
-
-
-// Config WSL Section END !!! ----------------------------------------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// App Event Trigger Section !!! --------------------------------------------------------------------------------
-
-
-
-async function handleEvent(eventInfo) {
-  console.log("Event Triggered")
-  // console.log(eventInfo);
-  console.log(eventInfo["AGENT_ID"])
-
-  if (eventInfo["EVENT"] == "INSTALL_AGENT") {
-    mainWindow.webContents.send('install-agent', agentId = eventInfo["AGENT_ID"], agentVersion = eventInfo["AGENT_VERSION"])
-  }
-  else if (eventInfo["EVENT"] == "UI_AUTOMATE") {
-    uiAutomateHandler(eventInfo["DATA"]);
-  }
-
-}
-
-async function handleWebEventTrigger(url) {
-  console.log("Event Triggered")
-  console.log(url);
-  let eventInfo = url.replace(/^agentbed:\/\//i, '');
-
-  if (eventInfo.endsWith('/')) {
-    eventInfo = eventInfo.slice(0, -1);
-  }
-
-  try {
-    const decoded = decodeURIComponent(eventInfo);
-    const parsed = JSON.parse(decoded);
-    console.log('Received AgentBed event:', parsed);
-    await handleEvent(parsed);
-  } catch (e) {
-    console.log('Failed to parse AgentBed event:', eventInfo, e);
-  }
-
-}
-
-
-// App Event Trigger Section END !!! ---------------------------------------------------------------------------
-
-
-
-
-// App Section !!! -------------------------------------------------------------------------------------
-
-app.on('second-instance', (event, argv) => {
-  const urlArg = argv.find(arg => arg.startsWith('agentbed://'));
-  if (urlArg) {
-    console.log('Second instance with protocol:', urlArg);
-    if (mainWindow) {
-      handleWebEventTrigger(urlArg);
-    }
-  }
+// Auto Updater Section (keeping your existing one) !!! -------------------------------------------------------------------------------------
+
+autoUpdater.on('checking-for-update', () => {
+  console.log("Checking for Update")
+  log.info('Checking for update...');
 });
 
+autoUpdater.on('update-available', (info) => {
+  log.info('Update available.');
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  log.info('Update not available.');
+});
+
+autoUpdater.on('error', (err) => {
+  log.error('Error in auto-updater. ' + err);
+});
+
+autoUpdater.on('download-progress', (progressObj) => {
+  let log_message = 'Download speed: ' + progressObj.bytesPerSecond;
+  log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
+  log_message = log_message + ' (' + progressObj.transferred + '/' + progressObj.total + ')';
+  log.info(log_message);
+});
+
+autoUpdater.on('update-downloaded', (info) => {
+  log.info('Update downloaded');
+});
+
+// App Section !!! ---------------------------------------------------------------------------------------------------
+
+let overlayManager;
+
 app.whenReady().then(async () => {
-
-  // Single Instance Check 
-  const AppLock = app.requestSingleInstanceLock();
-  if (!AppLock) {app.exit(0);}
-
-  // Global Shortcuts
-  globalShortcut.register('CommandOrControl+R', () => {
-    console.log('Ctrl+R is disabled');
-  });
-
-  globalShortcut.register('F5', () => {
-    console.log('F5 is disabled');
-  });
+  // Set app user model id for windows
+  electronApp.setAppUserModelId('com.agentbed');
 
   // Initialize DB 
-  try{ initDb()}
-  catch (error) { console.error('Failed to initialize database:', error); }
+  try {
+    initDb();
+  } catch (error) {
+    console.error('Failed to initialize database:', error);
+  }
 
   // Load Store
   store = await loadStore();
 
-  // Auto Updater
-    // autoUpdater.setFeedURL({
-    //   provider: 'github',
-    //   owner: 'Nicky9319',
-    //   repo: 'UserApplication_UpdateRepo',
-    //   private: false,
-    // });  
+  // Create overlay manager
+  overlayManager = new DisplayOverlayManager();
 
-    // autoUpdater.checkForUpdates();
-  
+  // Create main window
+  mainWindow = new UndetectableWindow({
+    undetectabilityEnabled: undetectabilityEnabled,
+    initialDisplay: screen.getPrimaryDisplay()
+  });
 
-  // Creating Window
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    show: false,
-    frame: false, // Remove default titlebar
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: join(__dirname, '../preload/preload.js'),
-      sandbox: false,
-      contextIsolation: true,
-      devTools: true,
-    },
-  })
-
-  // mainWindow.setIgnoreMouseEvents(true, { forward: true });
-
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-    // Start with click-through enabled by default
-    mainWindow.setIgnoreMouseEvents(true, { forward: true });
-  })
-
-
-  // Loading HTML and Configuring the Window
+  // Load the application
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow.window.loadURL(process.env['ELECTRON_RENDERER_URL']);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.window.loadFile(join(__dirname, '../renderer/index.html'));
   }
 
-  mainWindow.setMenuBarVisibility(false);
+  // Handle display changes
+  screen.on('display-added', handleDisplayChange);
+  screen.on('display-removed', handleDisplayChange);
+  screen.on('display-metrics-changed', handleDisplayChange);
 
-
-  // Register Protocol with the Windows
-
-  if (process.platform === 'win32') {
+  // Register protocol handler
+  if (isWindows) {
     const urlArg = process.argv.find(arg => arg.startsWith('agentbed://'));
     if (urlArg) {
-      mainWindow.webContents.once('did-finish-load', () => {
-        handleWebEventTrigger(urlArg)
+      mainWindow.window.webContents.once('did-finish-load', () => {
+        handleWebEventTrigger(urlArg);
       });
     }
   }
 
-
+  // Set up global shortcuts for development
+  if (isDev) {
+    globalShortcut.register('CommandOrControl+Alt+Shift+I', () => {
+      mainWindow.toggleUndetectability();
+    });
+    
+    globalShortcut.register('CommandOrControl+Alt+F', () => {
+      mainWindow.toggleFullscreen();
+    });
+    
+    globalShortcut.register('CommandOrControl+Alt+R', () => {
+      mainWindow.reload();
+    });
+    
+    globalShortcut.register('CommandOrControl+Alt+I', () => {
+      mainWindow.toggleDevTools();
+    });
+  }
 });
 
-app.on('will-quit' , async (event) => {
+function handleDisplayChange() {
+  const displays = getAvailableDisplays();
+  mainWindow.sendToWebContents('available-displays', { displays });
+  
+  // Check if current display still exists
+  const currentDisplay = screen.getDisplayMatching(mainWindow.getBounds());
+  if (!screen.getAllDisplays().some(d => d.id === currentDisplay.id)) {
+    mainWindow.moveToDisplay(screen.getPrimaryDisplay());
+    mainWindow.sendToWebContents('recenter-movable-windows', null);
+  }
+}
+
+function handleWebEventTrigger(urlArg) {
+  // Handle your custom protocol events here
+  console.log('Handling web event trigger:', urlArg);
+}
+
+app.on('will-quit', async (event) => {
   event.preventDefault();
   console.log("Quitting The Application !!!");
 
@@ -872,93 +919,4 @@ app.on('will-quit' , async (event) => {
   app.exit(0);
 });
 
-
-// App Section END !!! --------------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-// function createWindow() {
-//   initDb()
-//   .then(() => { 
-//     console.log('Database initialized successfully');
-//     addAgentInfo({ id: 1, name: 'Agent 1', env: {} })
-
-//   });
-  
-//   // Create the browser window.
-//   const mainWindow = new BrowserWindow({
-//     width: 1440,
-//     height: 1024,
-//     show: false,
-//     autoHideMenuBar: true,
-//     ...(process.platform === 'linux' ? { icon } : {}),
-//     webPreferences: {
-//       preload: join(__dirname, '../preload/preload.js'),
-//       sandbox: false
-//     }
-//   })
-
-//   mainWindow.on('ready-to-show', () => {
-//     mainWindow.show()
-//   })
-
-//   mainWindow.webContents.setWindowOpenHandler((details) => {
-//     shell.openExternal(details.url)
-//     return { action: 'deny' }
-//   })
-
-//   // HMR for renderer base on electron-vite cli.
-//   // Load the remote URL for development or the local html file for production.
-//   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-//     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-//   } else {
-//     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-//   }
-// }
-
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-
-// app.whenReady().then(() => {
-//   // Set app user model id for windows
-//   electronApp.setAppUserModelId('com.electron')
-
-//   // Default open or close DevTools by F12 in development
-//   // and ignore CommandOrControl + R in production.
-//   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
-
-
-//   // app.on('browser-window-created', (_, window) => {
-//   //   optimizer.watchWindowShortcuts(window)
-//   // })
-
-//   // IPC test
-//   ipcMain.on('ping', () => console.log('pong'))
-
-//   createWindow()
-
-//   app.on('activate', function () {
-//     // On macOS it's common to re-create a window in the app when the
-//     // dock icon is clicked and there are no other windows open.
-//     if (BrowserWindow.getAllWindows().length === 0) createWindow()
-//   })
-// })
-
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-// app.on('window-all-closed', () => {
-//   if (process.platform !== 'darwin') {
-//     app.quit()
-//   }
-// })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
+// App Section END !!! ---------------------------------------------------------------------------------------------------

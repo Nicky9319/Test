@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Display Overlay</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    
+    html, body, #overlay-root {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .overlay-button {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      font-family: sans-serif;
+      color: white;
+      cursor: pointer;
+      transition: all 0.2s ease-in-out;
+      background-color: rgba(0, 0, 0, 0.3);
+      border: none;
+      outline: none;
+      font-size: 16px;
+      /* Prevent focus stealing */
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+    }
+
+    .overlay-button:hover {
+      background-color: rgba(59, 130, 246, 0.4);
+    }
+
+    .overlay-button.highlighted {
+      background-color: rgba(59, 130, 246, 0.6);
+    }
+
+    .overlay-content {
+      text-align: center;
+      pointer-events: none;
+    }
+
+    .overlay-title {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    }
+
+    .overlay-label {
+      font-size: 16px;
+      opacity: 0.8;
+      margin-bottom: 0;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .overlay-resolution {
+      font-size: 16px;
+      opacity: 0.8;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay-root"></div>
+  <script>
+    // Simple overlay implementation
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const displayDataParam = urlParams.get('displayData');
+        
+        if (!displayDataParam) {
+          throw new Error('No display data provided in URL parameters');
+        }
+
+        const displayData = JSON.parse(decodeURIComponent(displayDataParam));
+        
+        if (!displayData.display || !displayData.ipcChannel) {
+          throw new Error('Invalid display data structure');
+        }
+
+        console.log('[DisplayOverlayApp] Loaded display data:', displayData);
+
+        const overlayRoot = document.getElementById('overlay-root');
+        
+        let isHighlighted = false;
+        let isHovered = false;
+
+        // Create overlay button
+        const overlayButton = document.createElement('button');
+        overlayButton.type = 'button';
+        overlayButton.className = 'overlay-button';
+        
+        // Create content
+        const content = document.createElement('div');
+        content.className = 'overlay-content';
+        
+        const title = document.createElement('div');
+        title.className = 'overlay-title';
+        title.textContent = `Click to move AgentBed`;
+        
+        const label = document.createElement('div');
+        label.className = 'overlay-label';
+        label.textContent = displayData.display.label;
+        
+        const resolution = document.createElement('div');
+        resolution.className = 'overlay-resolution';
+        resolution.textContent = `${displayData.display.bounds.width} × ${displayData.display.bounds.height}`;
+        
+        content.appendChild(title);
+        content.appendChild(label);
+        content.appendChild(resolution);
+        overlayButton.appendChild(content);
+
+        // Event handlers
+        overlayButton.addEventListener('click', (event) => {
+          // Prevent focus stealing
+          event.preventDefault();
+          event.stopPropagation();
+          
+          if (window.electron?.ipcRenderer) {
+            console.log(`[DisplayOverlay] Sending click event for display ${displayData.display.id} on channel ${displayData.ipcChannel}`);
+            window.electron.ipcRenderer.send(displayData.ipcChannel);
+          } else {
+            console.error('[DisplayOverlay] IPC renderer not available');
+          }
+        });
+
+        overlayButton.addEventListener('mouseenter', () => {
+          isHovered = true;
+          updateButtonStyle();
+        });
+
+        overlayButton.addEventListener('mouseleave', () => {
+          isHovered = false;
+          updateButtonStyle();
+        });
+
+        // Handle highlight/unhighlight events
+        window.addEventListener('highlight', () => {
+          isHighlighted = true;
+          updateButtonStyle();
+        });
+
+        window.addEventListener('unhighlight', () => {
+          isHighlighted = false;
+          updateButtonStyle();
+        });
+
+        function updateButtonStyle() {
+          overlayButton.className = 'overlay-button';
+          if (isHighlighted) {
+            overlayButton.classList.add('highlighted');
+          }
+          if (isHovered) {
+            overlayButton.style.backgroundColor = 'rgba(59, 130, 246, 0.4)';
+          } else if (isHighlighted) {
+            overlayButton.style.backgroundColor = 'rgba(59, 130, 246, 0.6)';
+          } else {
+            overlayButton.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+          }
+        }
+
+        overlayRoot.appendChild(overlayButton);
+
+      } catch (error) {
+        console.error('Failed to parse display data:', error);
+        
+        const overlayRoot = document.getElementById('overlay-root');
+        overlayRoot.innerHTML = `
+          <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background-color: rgba(239, 68, 68, 0.3); color: white;">
+            <div style="text-align: center;">
+              <div style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Error</div>
+              <div style="font-size: 14px; opacity: 0.7;">${error.message}</div>
+            </div>
+          </div>
+        `;
+      }
+    });
+  </script>
+</body>
+</html>
